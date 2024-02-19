@@ -4,12 +4,17 @@ p_load(tidyverse, magrittr, ggplot2, tools, flowCore, FlowSOM, dplyr, Rtsne, 'Bi
 
 names <- c("B72", "CD3", "CD4", "CD8", "CD11c", "CD206", "F480", "FOXP3", "Klrb1c", "Ly.6G", "sample", "condition")
 conditions <- read_csv("raw_data/conditions.csv", col_names = T)
+raw_data <- c("WT_intensities")
 
 intensities <- as.data.frame(matrix(ncol = length(names), nrow = 0))
 
+#read in the intensities and normalize per sample within range 1 and 100000
 for (i in 1:length(excel_sheets("raw_data/COMET_cell_counts_WT.xlsx"))) {
   temp <- read_xlsx("raw_data/COMET_cell_counts_WT.xlsx", sheet = i, col_names = F)
   sampl <- unlist(c(temp[1,1]))
+  if (sampl == "18CW25.4") {
+    next
+  }else {
   cells <- temp[3:dim(temp)[1],1]
   temp <- temp[3:dim(temp)[1],2:dim(temp)[2]]
   temp <- as.matrix(temp) 
@@ -17,22 +22,18 @@ for (i in 1:length(excel_sheets("raw_data/COMET_cell_counts_WT.xlsx"))) {
   rownames(temp) <- cells$...1
   temp <- na.omit(temp)
   colnames(temp) <- c('B72', 'CD3', 'CD4', 'CD8', 'CD11c', 'CD206','F480', 'FOXP3', 'Klrb1c', 'Ly.6G')
-  processed <- preProcess(temp, method=c("range"))
+  processed <- preProcess(temp, method=c("range"), rangeBounds = c(1, 100000))
   temp <- predict(processed, temp)
   temp <- as.data.frame(temp)
   temp$sample <- sampl
   temp$condition <- c(conditions[,sampl])
   intensities <- rbind(intensities, temp)
-  rm(temp,sampl)
+  rm(temp,sampl)}
 }
-#colnames(intensities) <- names
+
+head(intensities)
 
 #convert the table to work-able object
-raw_data <- c("WT_intensities_unfiltered_sample_removed")
-intensities <- intensities[intensities$sample != c("18CW25.4"),]
-intensities2 <- intensities[intensities$condition == "M (vehicle)",]
-
-
 
 r_data <- intensities[,1:(dim(intensities)[2]-2)]
 
@@ -58,9 +59,7 @@ data.ff <- new("flowFrame",
                parameters=AnnotatedDataFrame(metadata))
 write.FCS(data.ff, paste("analyses/",fcsfilename, sep = ""))
 
-
-
-#read created flowframe
+#read in created flowframe
 data <- flowCore::exprs(flowCore::read.FCS(paste("analyses/",fcsfilename, sep = ""), transformation = FALSE, truncate_max_range = FALSE))
 
 # create flowFrame object (required input format for FlowSOM)
@@ -87,8 +86,7 @@ out1 <- FlowSOM::BuildMST(out1)
 
 labels_pre <- out1$map$mapping[, 1]
 
-# specify final number of clusters for meta-clustering (can also be selected 
-# automatically, but this often does not perform well)
+# specify final number of clusters for meta-clustering (can also be selected automatically, but this often does not perform well)
 
 k <- 9
 
@@ -97,8 +95,6 @@ k <- 9
 
 seed <- 4321
 out <- FlowSOM::metaClustering_consensus(out1$map$codes, k = k, seed = seed)
-
-
 
 
 # extract cluster labels from output object
@@ -114,15 +110,14 @@ length(table(labels))
 
 res <- data.frame(cluster = labels)
 r_data <- as.data.frame(r_data)
+head(r_data)
 r_data$cluster <- res$cluster
 r_data$sample <- intensities$sample
 r_data$condition <- intensities$condition
 r_data$condition <- sapply(r_data$condition, toString)
-
+head(r_data)
 
 write.csv(r_data, file = paste0("analyses/",raw_data,"_cluster.txt"))
-
-r_data <- read.csv(paste0("analyses/",raw_data,"_cluster.txt"), header = T, row.names = 1)
 
 ################
 ### HEAT MAP ###
@@ -140,46 +135,107 @@ for (i in 2:9){
   x = apply(p[,1:10],2,mean)
   w = rbind(w,x)
 }
-
 rownames(w) <- c(1:9)
-
+head(w)
 
 heatmap <- pheatmap(w, scale = "column", color = bluered(100), legend = F, cluster_rows = F, cluster_cols = F, 
                     border_color = NA)
 
+head(r_data)
+r_data <- cbind(r_data, read.table(text = as.character(r_data$condition), sep = " "))
+colnames(r_data) <- c("B72","CD3","CD4","CD8","CD11c","CD206","F480","FOXP3","Klrb1c","Ly.6G","cluster","sample","condition","sex","treatment")
+head(r_data)
 
-
-r_data %>%
-  select(sample, condition, cluster) %>%
+percent <- r_data %>%
+  select(sample, condition, cluster, treatment) %>%
   group_by(cluster)%>%
-  count(sample) %>%
-  ggplot(aes(x=cluster, y=n, color=sample)) +
-  geom_line()+
+  count(treatment) 
+percent <- as.data.frame(percent)
+
+head(percent)
+
+percentV <- percent[percent$treatment=="(vehicle)",]
+percentV$percent <- percentV$n/sum(percentV$n)*100
+head(percentV)
+
+percentT <- percent[percent$treatment=="(AOM/DSS)",]
+percentT$percent <- percentT$n/sum(percentT$n)*100
+head(percentT)
+
+
+percent2 <- rbind(percentV, percentT)
+percent2$treatment <- factor(percent2$treatment, levels = c("(vehicle)", "(AOM/DSS)"))
+percent2$cluster <- factor(percent2$cluster)
+head(percent2)
+
+full <- ggplot(data=percent2, aes(x=percent, y= treatment, fill=cluster))+
+  geom_bar(stat = "identity")+
+  ylab(NULL)+
+  scale_fill_manual(name = "cluster",
+                    values = c("1" = "#fd7f6f",
+                               "2" = "#7eb0d5",
+                               "3" = "#b2e061",
+                               "4" = "#bd7ebe",
+                               "5" = "#ffb55a",
+                               "6" = "#ffee65",
+                               "7" = "#beb9db",
+                               "8" = "#fdcce5",
+                               "9" = "#8bd3c7"))+
   theme_classic()+
-  coord_flip()+
-  scale_x_reverse(breaks=c(9,8,7,6,5,4,3,2,1))
+  scale_y_discrete(limits=rev)
+full
 
-
-
-r_data %>%
-  select(sample, condition, cluster) %>%
-  group_by(cluster)%>%
-  count(sample) %>%  
-  ggplot(aes(x = cluster, y=n, fill=sample))+
-  geom_bar(position = "fill", stat = "identity")+
+half <- ggplot(data=percent2, aes(x=percent, y= treatment, fill=cluster))+
+  geom_bar(stat = "identity", show.legend = FALSE)+
+  ylab(NULL)+
+  scale_fill_manual(name = "Cluster",
+                    values = c("1" = "#fd7f6f",
+                               "2" = "#7eb0d5",
+                               "3" = "#b2e061",
+                               "4" = "#bd7ebe",
+                               "5" = "#ffb55a",
+                               "6" = "#ffee65",
+                               "7" = "#beb9db",
+                               "8" = "#fdcce5",
+                               "9" = "#8bd3c7"))+
   theme_classic()+
-  coord_flip()+
-  scale_x_reverse()
+  xlim(c(0,3))+
+  scale_y_discrete(limits=rev)
 
-r_data %>%
-  select(sample, condition, cluster) %>%
-  group_by(cluster)%>%
-  count(condition) %>%  
-  ggplot(aes(x = cluster, y=n, fill=condition))+
-  geom_bar(position = "fill", stat = "identity")+
+
+
+full /
+(half | plot_spacer()) + plot_layout(guides = 'collect')
+
+
+
+
+zoom <- ggplot(data=percent2, aes(x=cluster, y=percent, fill=treatment))+
+  geom_bar(stat = "identity", position=position_dodge())+
   theme_classic()+
-  coord_flip()+
-  scale_x_reverse()
+  ylim(c(0,10))+
+  scale_fill_manual(name="Treatment",
+                    values = c("(vehicle)"="#aaccff",
+                               "(AOM/DSS)"="#ffee65"))
+zoom
+
+top <- ggplot(data=percent2, aes(x=cluster, y=percent, fill=treatment))+
+  geom_bar(stat = "identity", position=position_dodge())+
+  theme_classic()+
+  scale_fill_manual(name="Treatment",
+                    values = c("(vehicle)"="#aaccff",
+                               "(AOM/DSS)"="#ffee65"))
+
+
+top
+
+
+
+
+
+#####################
+### dim-reduction ###
+#####################
 
 
 
@@ -217,8 +273,6 @@ dim(data_Rtsne)
 
 # run Rtsne (Barnes-Hut-SNE algorithm; runtime: 2-3 min)
 
-# note initial PCA is not required, since we do not have too many dimensions
-# (i.e. not thousands, which may be the case in other domains)
 
 set.seed(1234)
 out_Rtsne <- Rtsne(data_Rtsne, pca = TRUE, verbose = TRUE)
@@ -231,8 +285,7 @@ out_Rtsne <- Rtsne(data_Rtsne, pca = TRUE, verbose = TRUE)
 ###################
 
 # load cluster labels (if not still loaded)
-#labels <- paste(raw_data,"_cluster.txt")
-#data_labels <- read.table(file_labels, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
 
 labels <- subset$cluster
 
@@ -349,8 +402,6 @@ dim(data_Rtsne)
 
 # run Rtsne (Barnes-Hut-SNE algorithm; runtime: 2-3 min)
 
-# note initial PCA is not required, since we do not have too many dimensions
-# (i.e. not thousands, which may be the case in other domains)
 
 set.seed(1234)
 out_Rtsne <- Rtsne(data_Rtsne, pca = TRUE, verbose = TRUE)
@@ -363,8 +414,6 @@ out_Rtsne <- Rtsne(data_Rtsne, pca = TRUE, verbose = TRUE)
 ###################
 
 # load cluster labels (if not still loaded)
-#labels <- paste(raw_data,"_cluster.txt")
-#data_labels <- read.table(file_labels, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
 
 labels <- r_data$cluster
 
@@ -373,6 +422,7 @@ labels <- r_data$cluster
 labels_plot <- labels[!dups]
 length(labels_plot)  ## should be same as number of rows in data_Rtsne
 dim(data_Rtsne)
+
 # prepare Rtsne output data for plot
 
 data_plot <- as.data.frame(out_Rtsne$Y)
@@ -447,25 +497,5 @@ ggplot(plot_umap, aes(x = UMAP1, y = UMAP2, color = cluster)) +
   coord_fixed(ratio = 1) + 
   theme(plot.title = element_text(size = 10, face = "bold"),panel.background = element_rect(fill='white', colour='white'))
 
-
-
-
-
-ggplot(plot_umap, aes(x = UMAP1, y = UMAP2, color = sample)) + 
-  geom_point(aes(colour = as.factor(sample)),
-             size = 0.5) +
-  guides(colour = guide_legend(override.aes = list(size=5))) +
-  coord_fixed(ratio = 1) + 
-  theme(plot.title = element_text(size = 10, face = "bold"),panel.background = element_rect(fill='white', colour='white'))
-
-
-
-
-ggplot(plot_umap, aes(x = UMAP1, y = UMAP2, color = group)) + 
-  geom_point(aes(colour = as.factor(group)),
-             size = 0.5) +
-  guides(colour = guide_legend(override.aes = list(size=5))) +
-  coord_fixed(ratio = 1) + 
-  theme(plot.title = element_text(size = 10, face = "bold"),panel.background = element_rect(fill='white', colour='white'))
 
 
